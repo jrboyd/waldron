@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.pdf
+*.save
+tsne_components
+tsne_images
+ChIPQC_*

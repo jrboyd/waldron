@@ -2,6 +2,8 @@ library(magrittr)
 library(GenomicRanges)
 library(data.table)
 library(seqsetvis)
+library(BiocFileCache)
+bfc = BiocFileCache()
 
 ### pooled 
 wd = "/slipstream/galaxy/uploads/working/qc_framework/output_waldron_bivalency/"
@@ -60,3 +62,26 @@ names(k27_peaks.reps.broad) = basename(k27_peaks.reps.broad) %>% sub("_peaks.bro
 stopifnot(names(k4_bams.reps) == names(k4_peaks.reps))
 stopifnot(names(k27_bams.reps) == names(k27_peaks.reps.narrow))
 stopifnot(names(k27_bams.reps) == names(k27_peaks.reps.broad))
+
+k4_bw_hESC = c("H7_H3K4me3" = 
+                   file.path("/slipstream/galaxy/uploads/working", 
+                             "qc_framework/output_bivalency_redo_patients_H7", 
+                             "H7_H3K4ME3_pooled/H7_H3K4ME3_pooled_FE.bw"))
+k27_bw_hESC = c("H7_H3K27me3" = 
+                    file.path("/slipstream/galaxy/uploads/working", 
+                              "qc_framework/output_bivalency_redo_patients_H7", 
+                              "H7_H3K27ME3_pooled/H7_H3K27ME3_pooled_FE.bw"))
+
+k4_peaks_hESC = c("H7_H3K4me3" = 
+                      file.path("/slipstream/galaxy/uploads/working", 
+                                "qc_framework/output_bivalency_redo_patients_H7", 
+                                "H7_H3K4ME3_pooled/H7_H3K4ME3_pooled_peaks.narrowPeak"))
+k27_peaks_hESC = c("H7_H3K27me3" = 
+                       file.path("/slipstream/galaxy/uploads/working", 
+                                 "qc_framework/output_bivalency_redo_patients_H7", 
+                                 "H7_H3K27ME3_pooled/H7_H3K27ME3_pooled_peaks.narrowPeak"))
+
+k4_bws  = c(k4_bws, k4_bw_hESC)
+k27_bws = c(k27_bws, k27_bw_hESC)
+k4_peaks = c(k4_peaks, k4_peaks_hESC)
+k27_peaks = c(k27_peaks, k27_peaks_hESC)

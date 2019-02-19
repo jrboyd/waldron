@@ -128,8 +128,8 @@ make_tsne_img = function(bw_dt, tdt, n_points,
     tdt = copy(tdt)
     tdt[, bx := mybin(tx, n_points, xrng = xrng)]
     tdt[, by := mybin(ty, n_points, xrng = yrng)]
-
-
+    
+    
     mdt = merge(bw_dt, tdt[, .(bx, by, cell, id)], allow.cartesian=TRUE)
     if(is.null(mdt$mark)) mdt$mark = "signal"
     # if(is.null(tdt$cell)) tdt$cell = "sample"
@@ -364,6 +364,99 @@ xy2deg = function(x1, y1, x2, y2){
     # deg[deg > 360] = deg[deg > 360] - 360
     deg = 360 - (deg + 90)
     ang_cap(deg)
+}
+
+xy2dist = function(x1, y1, x2, y2){
+    x = x2 - x1
+    y = y2 - y1
+    (x^2 + y^2)^.5
+}
+
+plot_velocity_arrows_binned = function(tsne_res, 
+                                       cell_a, cell_b,
+                                       n_points,
+                                       p = NULL,
+                                       min_N = 0,
+                                       id_to_plot = NULL
+){
+    if(is.null(id_to_plot)){
+        tsne_res.tp = copy(tsne_res)
+    }else{
+        tsne_res.tp = tsne_res[id %in% id_to_plot]    
+    }
+    
+    av_dt = calc_delta(tsne_res.tp, cell_a, cell_b, n_points)$agg_velocity_dt
+    
+    p_velocity = ggplot() + 
+        # geom_density2d(data = tsne_res, aes(x = tsne_res$tx, y = tsne_res$ty, color = "lightgray") +
+        # geom_density2d(data = tsne_res, aes(x = tx, y = ty), color = "lightgray") +
+        stat_density_2d(data = tsne_res, aes(x = tx, y = ty, fill = stat(level)), geom = "polygon", bins = 7) +
+        # geom_point(data = tsne_res.tp[cell %in% c(cell_a, cell_b)][id %in% sampleCap(id, 500)], aes(x = tx, y = ty, color = cell)) +
+        geom_point(data = tsne_res.tp[cell %in% c(cell_a, cell_b)], aes(x = tx, y = ty, color = cell)) +
+        geom_segment(data = av_dt[N >= min_N], 
+                     aes(x = tx_cell_a, xend = tx_cell_b, 
+                         y = ty_cell_a, yend = ty_cell_b, 
+                         size = N), arrow = arrow()) + 
+        coord_cartesian(xlim = range(tsne_res$tx), ylim = range(tsne_res$ty)) +
+        scale_fill_gradient2(low = "gray", high = "black") +
+        labs(x = "x", y = "y", fill = "density") +
+        scale_size_continuous(range = c(.5, 2), 
+                              breaks = range(av_dt$N)) + 
+        theme_classic()
+    p_velocity
+}
+
+
+plot_velocity_arrows = function(tsne_res, cell_a, cell_b,
+                                p = NULL,
+                                id_to_plot = NULL,
+                                max_plotted = 500,
+                                delta.min = 0,
+                                delta.max = Inf,
+                                angle.min = 0, angle.max = 360){
+    v_dt = calc_delta(tsne_res, cell_a, cell_b, n_points)$velocity_dt
+    v_dt[, distance := xy2dist(x1 = tx_cell_a, x2 = tx_cell_b, y1 = ty_cell_a, y2 = ty_cell_b)]
+    v_dt = v_dt[distance >= delta.min & distance <= delta.max]
+    if(is.null(id_to_plot)){
+        v_dt.tp = copy(v_dt)
+    }else{
+        v_dt.tp = v_dt[id %in% id_to_plot]    
+    }
+    v_dt.tp = v_dt.tp[id %in% sampleCap(v_dt.tp$id, max_plotted)]
+    
+    v_dt.tp[, angle := xy2deg(x1 = tx_cell_a, x2 = tx_cell_b, y1 = ty_cell_a, y2 = ty_cell_b)]
+    
+    if(angle.min > angle.max){
+        v_dt.tp[, foreground := angle <= angle.min & angle >= angle.max]
+    }else{
+        v_dt.tp[, foreground := angle >= angle.min & angle <= angle.max]
+    }
+    
+    bins = 36
+    v_dt.tp[, angle_bin := ceiling((angle)/(360/bins))]
+    b_dt = v_dt.tp[, .N, angle_bin]
+    p_key = ggplot(b_dt, aes(x = angle_bin, y = N, fill = angle_bin)) + 
+        geom_bar(width = 1, stat = "identity") + coord_polar() +
+        scale_fill_gradientn(colours = c("orange", "red", "purple", "blue", 
+                                         "green", "orange"), limits = c(0, 360)/(360/bins), 
+                             breaks = 0:4*90/(360/bins), labels = function(x)x*360/bins) + 
+        scale_x_continuous(labels = function(x)x*360/bins, breaks = 1:4*90/(360/bins))
+    p_key
+    bg = v_dt.tp[foreground == FALSE & distance >= delta.min]
+    # v_dt.tp[, grp1 := tx_cell_a > tx_cell_b]
+    # v_dt.tp[, grp2 := ty_cell_a > ty_cell_b]
+    if(is.null(p)) p = ggplot()
+    p_arrows = p + 
+        labs(title = paste("from", cell_a, "to", cell_b), subtitle = "color mapped to angle") +
+        annotate("segment", x = bg$tx_cell_a, xend = bg$tx_cell_b, y = bg$ty_cell_a, yend = bg$ty_cell_b, color = "lightgray") +
+        geom_segment(data = v_dt.tp[foreground == TRUE], aes(x = tx_cell_a, xend = tx_cell_b, 
+                                                             y = ty_cell_a, yend = ty_cell_b, 
+                                                             color = angle), 
+                     arrow = arrow(length = unit(0.1,"cm"))) + 
+        
+        scale_color_gradientn(colours = c("orange", "red", "purple", "blue", 
+                                          "green", "orange"), limits = c(0, 360), breaks = 0:4*90) 
+    list(p_arrows, p_key)
 }
 
 library(magick)

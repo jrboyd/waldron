@@ -6,7 +6,7 @@
 # Figure5: prognostication of genes
 source('setup_files.R')
 source("functions.R")
-tx_gr =rtracklayer::import.gff("~/gencode.v28.annotation.gtf.gz", format = "gtf", feature.type  = "transcript")
+tx_gr = rtracklayer::import.gff("~/gencode.v28.annotation.gtf.gz", format = "gtf", feature.type  = "transcript")
 tx_gr = subset(tx_gr, transcript_support_level %in% 1:2)
 pr_gr = promoters(tx_gr, 1, 1)
 pr_gr = split(pr_gr, pr_gr$gene_name)
@@ -152,7 +152,10 @@ cluster_genes = split(mdt$gene_name, mdt$cluster_id)
 
 fig2_clust_res = my_clusterProfiler_fromGenes(cluster_genes)#, force_overwrite = TRUE)
 
-sego = simplify(fig2_clust_res[[1]])
+sego = bfcif(bfc, "fig2_simplify_go_v1", function(){
+    # sego
+    simplify(fig2_clust_res[[1]])
+})
 p = dotplot(sego, showCategory = Inf)
 ggsave("fig2_cluster_go.pdf", p, width = 20, height = 60, limitsize = FALSE)
 
@@ -186,6 +189,9 @@ tsne_input = fetch_tsne_mat(qdt, qgr,
 
 message("run tsne")
 tsne_res = run_tsne(tsne_input$tsne_mat, perplexity = 100)
+# tsne_res = run_tsne(tsne_input$tsne_mat, perplexity = 500)
+tsne_res$cell = factor(tsne_res$cell)
+tsne_res$cell = factor(tsne_res$cell, levels = levels(tsne_res$cell)[c(4, 1, 5, 2:3, 6:11)])
 
 # message("run tsne")
 # tsne_res = run_tsne(tsne_input$tsne_mat, perplexity = 2000)
@@ -199,7 +205,9 @@ p_basic = ggplot() +
 p_basic
 ggplot() + 
     annotate("point", x = tsne_res.tp$tx, y = tsne_res.tp$ty, color = "lightgray") +
-    geom_point(data = tsne_res.tp[grepl("CD34", cell)], aes(x = tx, y = ty, color = cell)) 
+    # geom_point(data = tsne_res.tp[grepl("CD34", cell)], aes(x = tx, y = ty, color = cell))
+    geom_point(data = tsne_res.tp[cell %in% c("CD34", "H7", 'Kasumi1')], aes(x = tx, y = ty, color = cell)) +
+    scale_colour_discrete(drop = TRUE) + facet_wrap("cell")
 
 message("make images")
 img_res = make_tsne_img(
@@ -236,59 +244,91 @@ ggsave("fig3_sideBySide.pdf", p$plot, width = 8, height = 4)
 tsne_res$btx = mybin(tsne_res$tx, n_points = n_points)
 tsne_res$bty = mybin(tsne_res$ty, n_points = n_points)
 
-plot_velocity_arrows = function(tsne_res, cell_a, cell_b,
-                                p = NULL,
-                                id_to_plot = NULL,
-                                max_plotted = 500,
-                                min_delta = .1,
-                                angle.min = 0, angle.max = 360){
-    v_dt = calc_delta(tsne_res, cell_a, cell_b, n_points)$velocity_dt
-    if(is.null(id_to_plot)){
-        v_dt.tp = copy(v_dt)
-    }else{
-        v_dt.tp = v_dt[id %in% id_to_plot]    
-    }
-    v_dt.tp = v_dt.tp[id %in% sampleCap(v_dt.tp$id, max_plotted)]
-    
-    v_dt.tp[, angle := xy2deg(x1 = tx_cell_a, x2 = tx_cell_b, y1 = ty_cell_a, y2 = ty_cell_b)]
-    if(angle.min > angle.max){
-        v_dt.tp[, foreground := angle <= angle.min & angle >= angle.max]
-    }else{
-        v_dt.tp[, foreground := angle >= angle.min & angle <= angle.max]
-    }
 
-    bins = 36
-    v_dt.tp[, angle_bin := ceiling((angle)/(360/bins))]
-    b_dt = v_dt.tp[, .N, angle_bin]
-    p_key = ggplot(b_dt, aes(x = angle_bin, y = N, fill = angle_bin)) + 
-        geom_bar(width = 1, stat = "identity") + coord_polar() +
-        scale_fill_gradientn(colours = c("orange", "red", "purple", "blue", 
-                                          "green", "orange"), limits = c(0, 360)/(360/bins), 
-                             breaks = 0:4*90/(360/bins), labels = function(x)x*360/bins) + 
-        scale_x_continuous(labels = function(x)x*360/bins, breaks = 1:4*90/(360/bins))
-    p_key
-    bg = v_dt.tp[foreground == FALSE]
-    # v_dt.tp[, grp1 := tx_cell_a > tx_cell_b]
-    # v_dt.tp[, grp2 := ty_cell_a > ty_cell_b]
-    if(is.null(p)) p = ggplot()
-    p_arrows = p + 
-        labs(title = paste("from", cell_a, "to", cell_b), subtitle = "color mapped to angle") +
-        annotate("segment", x = bg$tx_cell_a, xend = bg$tx_cell_b, y = bg$ty_cell_a, yend = bg$ty_cell_b, color = "lightgray") +
-        geom_segment(data = v_dt.tp[foreground == TRUE], aes(x = tx_cell_a, xend = tx_cell_b, 
-                                         y = ty_cell_a, yend = ty_cell_b, 
-                                         color = angle), 
-                     arrow = arrow(length = unit(0.1,"cm"))) + 
-        
-        scale_color_gradientn(colours = c("orange", "red", "purple", "blue", 
-                                          "green", "orange"), limits = c(0, 360), breaks = 0:4*90) 
-    list(p_arrows, p_key)
-}
 
-plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = tp, angle.min = 0, angle.max = 360)
+plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = tp, angle.min = 0, angle.max = 360, 
+                     delta.min = .1, delta.max = Inf)[[1]]
 plot_velocity_arrows(tsne_res, "CD34", "H7")
 plot_velocity_arrows(tsne_res, "CD34", "Kasumi1")
 
+
 delta_res = calc_delta(tsne_res, cell_a, cell_b, n_points)
+vel_mat = delta_res$velocity_dt[, 1:5]
+vel_mat$distance = xy2dist(vel_mat$tx_cell_a, vel_mat$ty_cell_a, vel_mat$tx_cell_b, vel_mat$ty_cell_b)
+vel_mat = vel_mat[distance > .2]
+hmat =  as.matrix(vel_mat[, 1:5][,-1])
+hc_hmat = hclust(dist(hmat))
+vel_mat$cluster_id = cutree(hc_hmat, 500)
+
+
+# gplots::heatmap.2(hmat, Colv = FALSE)
+# vel_mat = melt(vel_mat[, 1:5, with = FALSE], id.vars = "id")
+# vel_mat$sample = "a"
+best_groups = 9
+cells_tp = c("H7", "CD34", "Kasumi1", "Nalm6")
+# vel_clust = ssvSignalClustering(vel_mat, column_ = "variable", fill_ = "value", 
+#                                 nclust = 40, max_rows = Inf)
+# vel_clust_ids = unique(vel_clust[, .(id, cluster_id)])
+
+vel_clust_ids = vel_mat[, .(id, cluster_id)]
+vel_clust_size = vel_clust_ids[, .N, .(cluster_id)][order(N, decreasing = TRUE)]
+hist(vel_clust_size$N)
+top_cluster_ids = vel_clust_ids[cluster_id %in% vel_clust_size[seq_len(best_groups)]$cluster_id]
+# top_cluster_ids$is_top = TRUE
+cn = colnames(vel_mat)
+cn = cn[cn != "cluster_id"]
+vel_dt = merge(vel_mat[, cn, with = FALSE], top_cluster_ids, all.x = TRUE)
+vel_dt$cluster_id = factor(vel_dt$cluster_id, levels = vel_clust_size$cluster_id)
+
+cn = colnames(vel_mat)
+cn = cn[cn %in% c("id", "cluster_id") | grepl("tx", cn)]
+mdt = melt(vel_dt[, cn, with = FALSE], id.vars = c("id", "cluster_id"), value.name = "x")
+mdt[, variable := sub("tx_", "", variable)]
+
+cn = colnames(vel_mat)
+cn = cn[cn %in% c("id", "cluster_id") | grepl("ty", cn)]
+mdt2 = melt(vel_dt[, cn, with = FALSE], id.vars = c("id", "cluster_id"), value.name = "y")
+mdt2[, variable := sub("ty_", "", variable)]
+mdt = merge(mdt, mdt2)
+mdt[, cell := variable]
+
+mdt$cell = factor(mdt$cell, levels = cells_tp)
+ggplot(mdt[!is.na(cluster_id)], aes(x= x, y = y, color = cluster_id, group = id)) + geom_line()
+
+bg = vel_dt[is.na(cluster_id)]
+
+agg_dt = vel_dt[!is.na(cluster_id), 
+                .(tx_cell_a = mean(tx_cell_a),  
+                  tx_cell_b = mean(tx_cell_b), 
+                  ty_cell_a = mean(ty_cell_a),   
+                  ty_cell_b = mean(ty_cell_b)) , 
+                .(cluster_id)]
+
+p = ggplot()
+p + 
+    labs(title = paste("from", cell_a, "to", cell_b)) +
+    annotate("segment", x = bg$tx_cell_a, xend = bg$tx_cell_b, y = bg$ty_cell_a, yend = bg$ty_cell_b, color = "lightgray") +
+    geom_segment(data = vel_dt[!is.na(cluster_id)], 
+                 aes(x = tx_cell_a, xend = tx_cell_b, 
+                     y = ty_cell_a, yend = ty_cell_b, 
+                     color = cluster_id), 
+                 arrow = arrow(length = unit(0.1,"cm")),
+                 alpha = .1) + 
+    geom_segment(data = agg_dt,
+                 aes(x = tx_cell_a, xend = tx_cell_b, 
+                     y = ty_cell_a, yend = ty_cell_b), 
+                 color = "black",
+                 arrow = arrow(length = unit(0.4,"cm")),
+                 alpha = 1, size = 3) + 
+    facet_wrap("cluster_id") #+ 
+
+
+
+cells_dt = tsne_res[cell %in% cells_tp]
+cells_mat = dcast(cells_dt, id~cell, value.var = c("tx", "ty"))
+hc_hmat = hclust(dist(cells_mat[,-1]))
+cells_mat$cluster_id = cutree(hc_hmat, 50)
+vel_mat = cells_mat
 
 v_dt = delta_res$velocity_dt
 v_dt.tp = v_dt[id %in% tp]
@@ -304,7 +344,7 @@ p_arrows = ggplot(v_dt.tp, aes(x = tx_cell_a, xend = tx_cell_b,
     geom_segment(arrow = arrow(length = unit(0.1,"cm"))) + 
     scale_color_gradientn(colours = c("orange", "red", "purple", "blue", 
                                       "green", "orange"), limits = c(0, 360), breaks = 0:4*90) #+ facet_wrap("grp1~grp2")
-ggsave("fig3_arrows.pdf")
+ggsave("fig3_arrows.pdf", p_arrows, width = 4, height = 4)
 
 av_dt = delta_res$agg_velocity_dt
 
@@ -319,9 +359,7 @@ p_velocity = ggplot() +
 pg = cowplot::plot_grid(p_basic + labs(title = "t-sne: 2 ChIP-seq mark, 14 cell lines, 386 sites"), 
                         p_density + labs(title = "t-sne: profile frequency"), 
                         p_velocity + labs(title = "t-sne: changes between two cell lines"), nrow = 1, rel_widths = c(1,1, 1.3))
-ggsave("fig3_changes.pdf", pg, width = 14, height = 4)
-
-
+ggsave("fig3_changes.pdf", pg, width = 13, height = 4)
 
 pr_gr = pr_gr_cd34
 pr_gr = resize(pr_gr, 2000, fix = "center")
@@ -352,7 +390,63 @@ make_tss_plot("H7")
 make_tss_plot("CD34")
 dev.off()
 #
+clust_assign = unique(clust_cd34[, .(id, cluster_id)])
+tsne_res_cd34_clusters = merge(tsne_res, clust_assign)
+tsne_res_cd34_clusters[cluster_id == 11]
+ggplot(tsne_res_cd34_clusters[cluster_id == 11 & cell %in% c("H7", 'CD34', "Kasumi1")], aes(x = tx, y = ty, color = cell)) +
+    # annotate("density2d", x = tsne_res_cd34_clusters$tx, y = tsne_res_cd34_clusters$ty) +
+    geom_point(alpha = .15) + coord_cartesian(xlim = c(-.5, .5), ylim = c(-.5, .5))# +#+
+    # facet_wrap("cell")
+
+ggplot(tsne_res_cd34_clusters[cluster_id == 11 & cell %in% c("H7", 'CD34', "Kasumi1")], aes(x = tx, y = ty, color = cell)) +
+    # annotate("density2d", x = tsne_res_cd34_clusters$tx, y = tsne_res_cd34_clusters$ty) +
+    geom_density2d(bins = 3) + coord_cartesian(xlim = c(-.5, .5), ylim = c(-.5, .5)) #+#+
+# facet_wrap("cell")
 
 
-# plot(pr_img_res$tsne_dt[cell == "H7"]$bx,
-# img_res$tsne_dt[cell == "H7"]$bx)
+plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = clust_assign[cluster_id == 3]$id)[[1]]
+plot_velocity_arrows(tsne_res, "CD34", "Kasumi1", id_to_plot = clust_assign[cluster_id == 11]$id, delta.max = .1)[[1]]
+plot_velocity_arrows(tsne_res, "CD34", "Kasumi1", id_to_plot = clust_assign[cluster_id == 11]$id, delta.min = .1)[[1]]
+
+plot_velocity_arrows_binned(tsne_res, "H7", "CD34", 16)
+cell_a = "H7"
+cell_b = "CD34"
+pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+for(cid in sort(unique(clust_assign$cluster_id))){
+    message(cid)
+    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+                                n_points, min_N = 10, 
+                                id_to_plot = clust_assign[cluster_id == cid]$id)
+    print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
+}
+dev.off()
+
+
+cell_a = "CD34"
+cell_b = "Kasumi1"
+pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+for(cid in sort(unique(clust_assign$cluster_id))){
+    message(cid)
+    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+                                    n_points, min_N = 10, 
+                                    id_to_plot = clust_assign[cluster_id == cid]$id)
+    print(p + labs(title = paste("from", cell_a, "to", cell_fb), subtitle = paste("cluster", cid)))
+}
+dev.off()
+
+cell_a = "CD34"
+cell_b = "Nalm6"
+pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+for(cid in sort(unique(clust_assign$cluster_id))){
+    message(cid)
+    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+                                    n_points, min_N = 10, 
+                                    id_to_plot = clust_assign[cluster_id == cid]$id)
+    print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
+}
+dev.off()
+
+
+mdt = merge(tsne_res, clust_assign)
+mdt$cluster_id = as.character(mdt$cluster_id)
+ggplot(mdt[cell == "CD34" & cluster_id %in% 10:11], aes(x = tx, y = ty, color = cluster_id)) + geom_point(alpha = .1)
