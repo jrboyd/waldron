@@ -6,6 +6,7 @@
 # Figure5: prognostication of genes
 source('setup_files.R')
 source("functions.R")
+source("functions_tsne.R")
 tx_gr = rtracklayer::import.gff("~/gencode.v28.annotation.gtf.gz", format = "gtf", feature.type  = "transcript")
 tx_gr = subset(tx_gr, transcript_support_level %in% 1:2)
 pr_gr = promoters(tx_gr, 1, 1)
@@ -175,6 +176,8 @@ qdt = data.table(qbw = qbw)
 qdt[, c("cell", "mark") := tstrsplit(basename(qbw), "_", keep = 1:2)]
 qdt[, mark := sub("ME3", "me3", mark)]
 qdt[grepl("CD34", cell), cell := "CD34"]
+qdt$norm_factor = 1
+qdt[mark == "H3K4me3"]$norm_factor = 1/3
 # stopifnot(length(unique(table(qdt$cell))) == 1)
 stopifnot(length(unique(table(qdt$mark))) == 1)
 
@@ -223,9 +226,15 @@ p_density = plot_tsne_img(img_res$images_dt, n_points = n_points,
                           N_ceiling = NULL, N_floor = -50, min_size = 0,
                           show_plot = FALSE)$plot
 spc = 1/n_points/2*.9
-p_profiles = ggplot(img_res$images_dt, aes(xmin = tx - spc, xmax = tx + spc, 
-                                           ymin = ty - spc, ymax = ty + spc, 
-                                           image = png_file)) + geom_image.rect()
+# p_profiles = ggplot(img_res$images_dt, aes(xmin = tx - spc, xmax = tx + spc, 
+#                                            ymin = ty - spc, ymax = ty + spc, 
+#                                            image = png_file)) + geom_image.rect()
+p_profiles = make_img_plots(img_results = list(img_res), 
+               qcell = NULL, 
+               min_size = 1, 
+               N_ceiling = 100,
+               as_facet = FALSE)
+p_profiles = 
 ggsave("fig3_profiles.pdf", 
        cowplot::plot_grid(p_profiles, p_density), 
        width = 12, height = 6)
@@ -241,8 +250,8 @@ p = plot_tsne_img_byCell(img_res$images_dt,
                          n_points = n_points, min_size = 0)
 ggsave("fig3_sideBySide.pdf", p$plot, width = 8, height = 4)
 
-tsne_res$btx = mybin(tsne_res$tx, n_points = n_points)
-tsne_res$bty = mybin(tsne_res$ty, n_points = n_points)
+# tsne_res$btx = mybin(tsne_res$tx, n_points = n_points)
+# tsne_res$bty = mybin(tsne_res$ty, n_points = n_points)
 
 
 
@@ -364,7 +373,7 @@ ggsave("fig3_changes.pdf", pg, width = 13, height = 4)
 pr_gr = pr_gr_cd34
 pr_gr = resize(pr_gr, 2000, fix = "center")
 # pr_gr = reduce(pr_gr)
-hist(width(pr_gr))
+# hist(width(pr_gr))
 pr_dt = ssvFetchGRanges(list(prom2k = pr_gr), tsne_input$query_gr, 
                         return_data.table = TRUE, 
                         target_strand = "*",
@@ -388,6 +397,7 @@ p_pr_global = ggplot(pr_dt[, .(y = mean(y)), by = .(x)], aes(x = x, y = y)) + ge
 pdf("fig3_tss_plot.pdf", width = 8, height = 4)
 make_tss_plot("H7")
 make_tss_plot("CD34")
+make_tss_plot(unique(qdt$cell), as_facet = FALSE)
 dev.off()
 #
 clust_assign = unique(clust_cd34[, .(id, cluster_id)])
@@ -396,7 +406,7 @@ tsne_res_cd34_clusters[cluster_id == 11]
 ggplot(tsne_res_cd34_clusters[cluster_id == 11 & cell %in% c("H7", 'CD34', "Kasumi1")], aes(x = tx, y = ty, color = cell)) +
     # annotate("density2d", x = tsne_res_cd34_clusters$tx, y = tsne_res_cd34_clusters$ty) +
     geom_point(alpha = .15) + coord_cartesian(xlim = c(-.5, .5), ylim = c(-.5, .5))# +#+
-    # facet_wrap("cell")
+# facet_wrap("cell")
 
 ggplot(tsne_res_cd34_clusters[cluster_id == 11 & cell %in% c("H7", 'CD34', "Kasumi1")], aes(x = tx, y = ty, color = cell)) +
     # annotate("density2d", x = tsne_res_cd34_clusters$tx, y = tsne_res_cd34_clusters$ty) +
@@ -404,49 +414,398 @@ ggplot(tsne_res_cd34_clusters[cluster_id == 11 & cell %in% c("H7", 'CD34', "Kasu
 # facet_wrap("cell")
 
 
-plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = clust_assign[cluster_id == 3]$id)[[1]]
-plot_velocity_arrows(tsne_res, "CD34", "Kasumi1", id_to_plot = clust_assign[cluster_id == 11]$id, delta.max = .1)[[1]]
+plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = clust_assign[cluster_id == 11]$id)[[1]]
+plot_velocity_arrows(tsne_res, "H7", "CD34", id_to_plot = clust_assign[cluster_id == 10]$id)[[1]]
+# plot_velocity_arrows(tsne_res, "CD34", "Kasumi1", id_to_plot = clust_assign[cluster_id == 11]$id, delta.max = .1)[[1]]
 plot_velocity_arrows(tsne_res, "CD34", "Kasumi1", id_to_plot = clust_assign[cluster_id == 11]$id, delta.min = .1)[[1]]
 
 plot_velocity_arrows_binned(tsne_res, "H7", "CD34", 16)
-cell_a = "H7"
-cell_b = "CD34"
-pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
-for(cid in sort(unique(clust_assign$cluster_id))){
-    message(cid)
-    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
-                                n_points, min_N = 10, 
-                                id_to_plot = clust_assign[cluster_id == cid]$id)
-    print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
-}
-dev.off()
-
-
-cell_a = "CD34"
-cell_b = "Kasumi1"
-pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
-for(cid in sort(unique(clust_assign$cluster_id))){
-    message(cid)
-    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
-                                    n_points, min_N = 10, 
-                                    id_to_plot = clust_assign[cluster_id == cid]$id)
-    print(p + labs(title = paste("from", cell_a, "to", cell_fb), subtitle = paste("cluster", cid)))
-}
-dev.off()
-
-cell_a = "CD34"
-cell_b = "Nalm6"
-pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
-for(cid in sort(unique(clust_assign$cluster_id))){
-    message(cid)
-    p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
-                                    n_points, min_N = 10, 
-                                    id_to_plot = clust_assign[cluster_id == cid]$id)
-    print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
-}
-dev.off()
+plot_velocity_arrows_binned(tsne_res, "CD34", "H7", 16)
+# cell_a = "H7"
+# cell_b = "CD34"
+# pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+# for(cid in sort(unique(clust_assign$cluster_id))){
+#     message(cid)
+#     p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+#                                     n_points, min_N = 10, 
+#                                     id_to_plot = clust_assign[cluster_id == cid]$id)
+#     print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
+# }
+# dev.off()
+# 
+# 
+# cell_a = "CD34"
+# cell_b = "Kasumi1"
+# pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+# for(cid in sort(unique(clust_assign$cluster_id))){
+#     message(cid)
+#     p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+#                                     n_points, min_N = 10, 
+#                                     id_to_plot = clust_assign[cluster_id == cid]$id)
+#     print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
+# }
+# dev.off()
+# 
+# cell_a = "CD34"
+# cell_b = "Nalm6"
+# pdf(paste0("fig3_velocity_", cell_a, "_to_", cell_b, ".pdf"))
+# for(cid in sort(unique(clust_assign$cluster_id))){
+#     message(cid)
+#     p = plot_velocity_arrows_binned(tsne_res, cell_a, cell_b, 
+#                                     n_points, min_N = 10, 
+#                                     id_to_plot = clust_assign[cluster_id == cid]$id)
+#     print(p + labs(title = paste("from", cell_a, "to", cell_b), subtitle = paste("cluster", cid)))
+# }
+# dev.off()
 
 
 mdt = merge(tsne_res, clust_assign)
 mdt$cluster_id = as.character(mdt$cluster_id)
-ggplot(mdt[cell == "CD34" & cluster_id %in% 10:11], aes(x = tx, y = ty, color = cluster_id)) + geom_point(alpha = .1)
+
+
+zoom_x = c(-.32, .08)
+zoom_y = c(-.5, -.36)
+p_basic + annotate("rect", 
+                   xmin = min(zoom_x), xmax = max(zoom_x), 
+                   ymin = min(zoom_y), ymax = max(zoom_y), 
+                   fill = "green", alpha = .3, color = "black")
+
+p_density + annotate("rect", 
+                     xmin = min(zoom_x), xmax = max(zoom_x), 
+                     ymin = min(zoom_y), ymax = max(zoom_y), 
+                     fill = "green", alpha = .3, color = "black")
+img_res_zoom = make_tsne_img(
+    bw_dt = tsne_input$bw_dt,
+    tdt = tsne_res, #force_rewrite = TRUE, 
+    n_points = n_points, 
+    xrng = zoom_x, 
+    yrng = zoom_y
+)
+p = plot_tsne_img(img_res_zoom$images_dt, n_points = n_points, 
+                  xrng = zoom_x, 
+                  yrng = zoom_y,
+                  N_ceiling = NULL, N_floor = 0, min_size = 0,
+                  show_plot = FALSE)$plot
+p + 
+    geom_density2d(data = mdt[cell == "CD34" & cluster_id %in% 10:11], 
+                   aes(x = tx, y = ty, color = cluster_id), bins = 3) +
+    coord_cartesian(xlim = zoom_x, ylim = zoom_y)#+ geom_point(alpha = .1)
+
+p + 
+    geom_density2d(data = mdt[cell == "H7" & cluster_id %in% 10:11], 
+                   aes(x = tx, y = ty, color = cluster_id), bins = 3) +
+    coord_cartesian(xlim = zoom_x, ylim = zoom_y)#+ geom_point(alpha = .1)
+
+p + 
+    geom_density2d(data = mdt[cell == "Kasumi1" & cluster_id %in% 10:11], 
+                   aes(x = tx, y = ty, color = cluster_id), bins = 3) +
+    coord_cartesian(xlim = zoom_x, ylim = zoom_y)#+ geom_point(alpha = .1)
+
+p_density_zoom = plot_tsne_img(img_res_zoom$images_dt, n_points = n_points, 
+                               xrng = zoom_x, 
+                               yrng = zoom_y,
+                               N_ceiling = NULL, N_floor = 0, min_size = 0,
+                               show_plot = FALSE)$plot
+p_density_zoom
+
+
+pr_img_res = make_tsne_img(
+    bw_dt = pr_dt, 
+    apply_norm = FALSE, 
+    tdt = tsne_res, #force_rewrite = TRUE, 
+    # xrng = zoom_x,
+    # yrng = zoom_y,
+    n_points = n_points, line_colors = c("signal" = "black")
+)
+
+
+
+qdt
+bam_qdt = data.table(filepath = bams, sample = names(bams))
+bam_qdt[, c("cell", "mark") := tstrsplit(sample, "_")]
+bam_qdt[, cell := sub("CD34.+", "CD34", cell)]
+# bam_qdt = bam_qdt[mark == "input"]
+
+bam_input_dt = bfcif(bfc, #force_overwrite = TRUE,
+                     digest::digest(list("input_bams", 
+                                         bam_qdt, tsne_input$query_gr)), 
+                     function(){
+                         ssvFetchBam(bam_qdt,
+                                     tsne_input$query_gr,
+                                     return_data.table = TRUE,
+                                     target_strand = "*",
+                                     fragLens = NA,
+                                     win_size = 50,
+                                     win_method = "summary", 
+                                     n_cores = 20)
+                     })
+
+bam_qdt$count = unlist(
+    bfcif(bfc, 
+          digest::digest(list("bam counts",
+                              bam_qdt$filepath)),
+          function(){
+              parallel::mclapply(bam_qdt$filepath, function(x){
+                  Rsamtools::countBam(x)$records
+              })
+          })
+)
+
+bam_input_dt = bam_input_dt[, .(y = sum(y)), .(id, x, cell, mark)]
+
+bam_input_dt = merge(bam_input_dt, bam_qdt[, .(count = sum(count)), .(cell, mark)])
+bam_input_dt = bam_input_dt[, .(id, x, y = y / count * 1e6, cell, mark)]
+
+# bam_input_dt = bam_input_dt[, .(id, x, y = y / sum(y) * 1e6), .(cell, mark)]
+qcap = quantile(bam_input_dt[, max(y), by = .(id, cell)]$V1, .95)
+bam_input_dt[y > qcap, y := qcap]
+
+ggplot(bam_input_dt[, .(y = mean(y)), .(cell, mark, x)], 
+       aes(x = x, y = y, color = mark)) + 
+    geom_path() + facet_wrap("cell")
+
+#bam_input_dt[, .(y = sum(y)), .(cell, mark)]
+inputs_img_res = make_tsne_img(#force_rewrite = T,
+                               bw_dt = bam_input_dt, 
+                               apply_norm = FALSE, 
+                               tdt = tsne_res, #force_rewrite = TRUE, 
+                               ylim = c(0,10),  
+                               # xrng = zoom_x,
+                               # yrng = zoom_y,
+                               n_points = 20, 
+                               line_colors = c("input" = "blue", "H3K4me3" = "forestgreen", "H3K27me3" = "red")
+)
+
+# make_img_plots(img_results = list(img_res, pr_img_res, inputs_img_res), 
+#                qcell = c("H7", "CD34", "Kasumi1"), 
+#                as_facet = TRUE)
+
+# make_img_plots(img_results = list(inputs_img_res), 
+#                qcell = c("H7", "CD34", "Kasumi1"), 
+#                min_size = .2, 
+#                N_ceiling = 1600,
+#                as_facet = TRUE)
+
+make_img_plots(img_results = list(inputs_img_res), 
+               qcell = NULL, 
+               min_size = 0, 
+               N_ceiling = NULL,
+               as_facet = FALSE)
+
+qsize = 5000
+
+
+bam_stranded_dt = bfcif(bfc, #force_overwrite = T,
+                        digest::digest(list("stranded_bams", qsize, 1,
+                                            bam_qdt, tsne_input$query_gr)), 
+                        function(){
+                            ssvFetchBam(bam_qdt,
+                                        resize(tsne_input$query_gr, qsize, fix = 'center'),
+                                        return_data.table = TRUE,
+                                        target_strand = "both",
+                                        fragLens = NA,
+                                        win_size = 50,
+                                        win_method = "summary", 
+                                        n_cores = 20, 
+                                        max_dupes = 1)
+                        })
+
+bams_hESC = c("H7_H3K4me3" = "/slipstream/galaxy/uploads/working/qc_framework/output_bivalency_redo_patients_H7/H7_H3K4ME3_pooled/H7_H3K4ME3_pooled.bam",
+            "H7_H3K27me3" = "/slipstream/galaxy/uploads/working/qc_framework/output_bivalency_redo_patients_H7/H7_H3K27ME3_pooled/H7_H3K27ME3_pooled.bam")
+bam_qdt2 = data.table(filepath = bams_hESC, sample = names(bams_hESC))
+bam_qdt2[, c("cell", "mark") := tstrsplit(sample, "_")]
+
+bam_stranded_dt2 = bfcif(bfc, #force_overwrite = T,
+                        digest::digest(list("stranded_bams", qsize, 1,
+                                            bam_qdt2, tsne_input$query_gr)), 
+                        function(){
+                            ssvFetchBam(bam_qdt2,
+                                        resize(tsne_input$query_gr, qsize, fix = 'center'),
+                                        return_data.table = TRUE,
+                                        target_strand = "both",
+                                        fragLens = NA,
+                                        win_size = 50,
+                                        win_method = "summary", 
+                                        n_cores = 20, 
+                                        max_dupes = 1)
+                        })
+bam_qdt2$count = unlist(
+    bfcif(bfc, 
+          digest::digest(list("bam counts",
+                              bam_qdt2$filepath)),
+          function(){
+              parallel::mclapply(bam_qdt2$filepath, function(x){
+                  Rsamtools::countBam(x)$records
+              })
+          })
+)
+
+
+bam_stranded_dt = bam_stranded_dt[, .(y = sum(y)), .(id, x, cell, mark, strand)]
+
+
+bam_counts = bam_qdt[, .(count = sum(count)), .(cell, mark)]
+bam_stranded_dt = merge(bam_stranded_dt, bam_counts)
+bam_counts2 = bam_qdt2[, .(count = sum(count)), .(cell, mark)]
+bam_stranded_dt2 = merge(bam_stranded_dt2[, .(id, x, cell, mark, strand, y)], bam_counts2)
+
+#join results
+bam_stranded_dt = rbind(bam_stranded_dt, bam_stranded_dt2)
+remove(bam_stranded_dt2)
+
+bam_stranded_dt = bam_stranded_dt[, .(id, x, y = y / count * 1e6, strand), .(cell, mark)]
+# bam_stranded_dt = bam_stranded_dt[, .(id, x, y = y / sum(y) * 1e6, strand), .(cell, mark)]
+# qcap = quantile(bam_stranded_dt[, max(y), by = .(id, cell)]$V1, .95)
+# bam_stranded_dt[y > qcap, y := qcap]
+# dt = bam_stranded_dt[id %in% unique(id)[1:6] & cell %in% unique(cell)[1:14]]
+dt = bam_stranded_dt
+dt = dcast(dt[, .(strand, id, x, y, cell, mark)], "cell+mark+id+x~strand", value.var = "y")
+dt[, diff := `+` - `-`]
+# pdt = dt[mark == "H3K4me3"]
+pdt = dt
+quart_pdt = pdt[, quantile(abs(diff), c(.05, .25, .5, .75, .95)), .(cell, mark)]
+quart_pdt$q = paste0("q", c("0", "25", "50", "75", "100"))
+quart_pdt = dcast(quart_pdt, "cell+mark~q", value.var = "V1")
+mean_pdt = pdt[, mean(abs(diff)), .(cell, mark)]
+median_pdt = pdt[, median(abs(diff)), .(cell, mark)]
+ggplot() + 
+    geom_boxplot(data = quart_pdt, aes(x = cell, ymin = q0, lower = q25, middle = q50, upper = q75, ymax = q100), stat = "identity") + 
+    geom_point(data = mean_pdt, aes(x = cell, y = V1), color = "red") +
+    geom_point(data = median_pdt, aes(x = cell, y = V1), color = "blue") +
+    facet_wrap("mark", scales = "free_y") + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+    annotate("line", x = c(.5, 11.5), y = c(.05, .05), color = "green")
+
+strand_diff_dt = dt[, .(cell, mark, id, x, y = diff)]
+
+zoom_x = c(-.5, .5)
+zoom_y = c(-.5, .5)
+zoom_np = 15
+p_alpha = .1
+cell_a = "CD34"
+cell_b = "Kasumi1"
+qcells = c("CD34", "Kasumi1", "U937", "H7")
+sdiff_img_res = make_tsne_img(
+                               bw_dt = strand_diff_dt, 
+                               apply_norm = FALSE, 
+                               tdt = tsne_res, #force_rewrite = TRUE, 
+                               ylim = c(-.04, .04),  
+                               xrng = zoom_x,
+                               yrng = zoom_y,
+                               n_points = zoom_np, 
+                               line_colors = c("input" = "blue", 
+                                               "H3K4me3" = "forestgreen", 
+                                               "H3K27me3" = "red")
+)
+
+pile_img_res = make_tsne_img(
+    bw_dt = bam_input_dt, 
+    apply_norm = FALSE, 
+    tdt = tsne_res, #force_rewrite = TRUE, 
+    ylim = c(0, .8),  
+    xrng = zoom_x,
+    yrng = zoom_y,
+    n_points = zoom_np, 
+    line_colors = c("input" = "blue", 
+                    "H3K4me3" = "forestgreen", 
+                    "H3K27me3" = "red")
+)
+
+
+p = make_img_plots(img_results = list(sdiff_img_res, pile_img_res), 
+               xrng = zoom_x, 
+               yrng = zoom_y,
+               qcell = NULL, 
+               min_size = .3, 
+               N_ceiling = 50,
+               as_facet = FALSE)
+
+p1 = p[[1]] + geom_point(data = sdiff_img_res$tsne_dt[cell %in% qcells], 
+                    aes(x = tx, y = ty, color = cell),
+                    alpha = p_alpha, shape = 16, size = .3) +
+    facet_wrap("cell")
+
+p2 = p[[2]] + geom_point(data = sdiff_img_res$tsne_dt[cell %in% qcells], 
+                    aes(x = tx, y = ty, color = cell),
+                    alpha = p_alpha, shape = 16, size = .3) +
+    facet_wrap("cell")
+
+rects = list(
+    c(-.32, -.095, -.5, -.37),
+    c(-.4, -.25, -.25, -.13),
+    c(-.05, .25, -.07, .2)
+)
+anns = matrix(unlist(rects), ncol = 4, byrow = TRUE)
+# anns = data.frame(xmin = c(-.33, -.4, -.05), xmax = c(-.08, -.25, .25), ymin = c(-.5, -.25, -.07), ymax = c(-.35, -.13, .2))
+pann_full = ggplot() + geom_point(data = sdiff_img_res$tsne_dt[cell %in% qcells], 
+           aes(x = tx, y = ty, color = cell),
+           alpha = p_alpha, shape = 16, size = .3) + 
+    guides(color = guide_legend(override.aes = list(alpha = 1, size = 2, shape = 16)))
+pann = pann_full
+for(i in seq_len(nrow(anns))){
+    pann = pann + 
+        annotate("rect", 
+                           xmin = anns[i, 1],
+                           xmax = anns[i, 2],
+                           ymin = anns[i, 3],
+                           ymax = anns[i, 4], color = "black", fill = NA) +
+        annotate("label", 
+                 # x = (anns[i, 1] + anns[i, 2])/2,
+                 # y = (anns[i, 3] + anns[i, 4])/2,
+                 x = anns[i, 2],
+                 y = anns[i, 4],
+                 hjust = 1,
+                 vjust = 1,
+                 label = i)
+    
+    
+}
+pann 
+
+i = 1
+zoom_xi = anns[i,][1:2]
+zoom_yi = anns[i,][3:4]
+zoom_np = 8
+ggplot() + geom_point(data = sdiff_img_res$tsne_dt[cell %in% qcells], 
+                      aes(x = tx, y = ty, color = cell),
+                      alpha = .5, shape = 16, size = 1) + 
+    guides(color = guide_legend(override.aes = list(alpha = 1, size = 2, shape = 16))) + 
+    coord_cartesian(zoom_xi, zoom_yi) + facet_wrap("cell")
+pile_img_res = make_tsne_img(
+    profiles_dt = bam_input_dt[cell %in% qcells], 
+    position_dt = tsne_res[cell %in% qcells], #force_rewrite = TRUE, 
+    apply_norm = FALSE, 
+    ylim = c(0, .8),  
+    xrng = zoom_xi,
+    yrng = zoom_yi,
+    n_points = zoom_np, 
+    line_colors = c("input" = "blue", 
+                    "H3K4me3" = "forestgreen", 
+                    "H3K27me3" = "red"),
+    facet_by = "cell"
+)
+
+make_img_plots_facet(img_results = list(pile_img_res), 
+               xrng = zoom_xi, 
+               yrng = zoom_yi,
+               qcell = NULL, 
+               min_size = .3, 
+               N_ceiling = 50)
+
+
+pg = cowplot::plot_grid(p1, p2, nrow = 2)
+ggsave("tmp.pdf", plot = pg, width = 4*length(qcells), height = 8)
+
+sdt = sdiff_img_res$summary_profiles_dt
+cap = .03
+sdt[, ycap := y]
+sdt[y > cap, ycap := cap]
+sdt[y < -cap, ycap := -cap]
+hist(sdt$ynorm)
+library(GGally)
+glyph_df = GGally::glyphs(sdt, x_major = "bx", x_minor = "x", y_major = "by", y_minor = "ycap")
+ggplot(glyph_df, aes(gx, gy, group = paste(gid, mark), color = mark)) + 
+    geom_path() + 
+    scale_color_manual(values =  c("input" = "blue", 
+                                   "H3K4me3" = "forestgreen", 
+                                   "H3K27me3" = "red"))

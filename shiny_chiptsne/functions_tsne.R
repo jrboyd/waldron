@@ -1,6 +1,35 @@
 library(Rtsne)
 library(ggimage)
 
+annotate_rects = function(p, rects){
+    anns = matrix(unlist(rects), ncol = 4, byrow = TRUE)
+    # anns = anns[order(anns[,3], decreasing = TRUE),]
+    p_alpha = .1
+    
+    # anns = data.frame(xmin = c(-.33, -.4, -.05), xmax = c(-.08, -.25, .25), ymin = c(-.5, -.25, -.07), ymax = c(-.35, -.13, .2))
+    # p
+    
+    for(i in seq_len(nrow(anns))){
+        p = p + 
+            annotate("rect", 
+                     xmin = anns[i, 1],
+                     xmax = anns[i, 2],
+                     ymin = anns[i, 3],
+                     ymax = anns[i, 4], color = "black", fill = NA) +
+            annotate("label", 
+                     # x = (anns[i, 1] + anns[i, 2])/2,
+                     # y = (anns[i, 3] + anns[i, 4])/2,
+                     x = anns[i, 1],
+                     y = anns[i, 4],
+                     hjust = 1,
+                     vjust = 1,
+                     label = i)
+        
+        
+    }
+    p
+}
+
 norm1 = function(x, xrng = range(x)){
     stopifnot(length(xrng) == 2)
     (x - min(xrng)) / (max(xrng) - min(xrng))
@@ -27,19 +56,28 @@ fetch_tsne_mat = function(qdt,
                           high_on_right = TRUE,
                           bfc = BiocFileCache::BiocFileCache(),
                           n_cores = getOption("mc.cores", 1),
-                          rname = digest::digest(list(qgr, qdt, qwin, qmet, cap_value, high_on_right))){
+                          rname = digest::digest(list(qgr, qdt[, 1:3], qwin, qmet, cap_value, high_on_right)),
+                          force_overwrite = FALSE){
     bw_dt = bfcif(bfc, rname, function(){
-        ssvFetchBigwig(qdt, qgr, 
+        ssvFetchBigwig(qdt[, 1:3], qgr, 
                        return_data.table = TRUE, 
                        win_method = qmet, 
                        win_size = qwin, n_cores = n_cores)
-    })   
+    }, force_overwrite = force_overwrite)   
     bw_dt$sample = NULL
     bw_dt = bw_dt[, .(y = mean(y)), .(cell, id, mark, x)]
+    if(!all(qdt$norm_factor == 1)){
+        norm_dt = unique(qdt[, .(cell, mark, norm_factor)])
+        bw_dt = merge(bw_dt, norm_dt)
+        bw_dt[, y := y * norm_factor]
+        bw_dt$norm_factor = NULL
+    }
+    
     bw_dt[y > cap_value, y := cap_value]
     
+    
+    
     if(high_on_right){
-        # browser()
         balance_dt = bw_dt[, .(right_sum = sum(y[x > 0]), left_sum = sum(y[x < 0])), by = .(cell, id)]
         balance_dt = balance_dt[, .(needs_flip = left_sum > right_sum, cell, id)]
         most_flipped = balance_dt[, .(fraction_flipped = sum(needs_flip) / .N), by = .(id)]
@@ -79,11 +117,13 @@ run_tsne = function(tsne_mat, perplexity = 100,
                         tsne_mat[sample(1:nrow(tsne_mat), 20),
                                  sample(1:ncol(tsne_mat), 20)],
                         perplexity
-                    ))){
+                    )),
+                    force_overwrite = FALSE){
     set.seed(0)
-    res_tsne = bfcif(bfc, rname, function(){
-        Rtsne(tsne_mat, num_threads = n_cores, perplexity = perplexity, check_duplicates = FALSE)
-    })
+    res_tsne = bfcif(bfc, rname, force_overwrite = force_overwrite,
+                     FUN = function(){
+                         Rtsne(tsne_mat, num_threads = n_cores, perplexity = perplexity, check_duplicates = FALSE)
+                     })
     
     tdt = as.data.table(res_tsne$Y)
     colnames(tdt) = c("tx", "ty")
@@ -115,36 +155,52 @@ run_tsne = function(tsne_mat, perplexity = 100,
     tdt
 }
 
-make_tsne_img = function(bw_dt, tdt, n_points, 
-                         xrng = range(tdt$tx), yrng = range(tdt$ty),
-                         rname = digest::digest(list(bw_dt, tdt, n_points)), 
-                         odir = file.path("tsne_images/", rname), force_rewrite = FALSE,
+make_tsne_img = function(profiles_dt, position_dt, n_points, 
+                         xrng = range(position_dt$tx), 
+                         yrng = range(position_dt$ty),
+                         rname = digest::digest(list(
+                             profiles_dt, position_dt, 
+                             n_points, apply_norm, 
+                             ylim, line_colors, facet_by)), 
+                         odir = file.path("tsne_images/", rname), 
+                         force_rewrite = FALSE,
                          apply_norm = TRUE,
                          ylim = c(0, 1),
+                         facet_by = NULL,
+                         # view_rect = list(),
                          ma_size = 2,
                          n_cores = getOption("mc.cores", 1),
-                         line_colors = c("H3K4me3" = "forestgreen", "H3K27me3" = "firebrick1")){
-    
-    tdt = copy(tdt)
-    tdt[, bx := mybin(tx, n_points, xrng = xrng)]
-    tdt[, by := mybin(ty, n_points, xrng = yrng)]
-    
-    
-    mdt = merge(bw_dt, tdt[, .(bx, by, cell, id)], allow.cartesian=TRUE)
+                         line_colors = c("H3K4me3" = "forestgreen", 
+                                         "H3K27me3" = "firebrick1")){
+    # stopifnot(is.list(view_rect))
+    # if(is.null(view_rect$xmin))
+    position_dt = copy(position_dt)
+    position_dt = position_dt[tx >= min(xrng) & tx <= max(xrng) & ty >= min(yrng) & ty <= max(yrng)]
+    #use positional info from position_dt to bin points
+    position_dt[, bx := mybin(tx, n_points, xrng = xrng)]
+    position_dt[, by := mybin(ty, n_points, xrng = yrng)]
+    #merge binning info to profiles
+    mdt = merge(profiles_dt, position_dt[, .(bx, by, cell, id)], allow.cartesian=TRUE, by = intersect(colnames(profiles_dt), c("cell", "id")))#, by = c("cell", "id"))
     if(is.null(mdt$mark)) mdt$mark = "signal"
-    # if(is.null(tdt$cell)) tdt$cell = "sample"
-    mdt = mdt[, .(y = mean(y)), .(bx, by, x, mark)]
     
+    if(is.null(facet_by)){
+        mdt = mdt[, .(y = mean(y)), .(bx, by, x, mark)]
+    }else{
+        mdt = mdt[, .(y = mean(y)), .(bx, by, x, mark, get(facet_by))]
+        colnames(mdt)[colnames(mdt) == "get"] = facet_by
+    }
+    #each combination of bx and by is a unique plot_id
     mdt[, plot_id := paste(bx, by, sep = "_")]
-    
     dir.create(odir, recursive = TRUE, showWarnings = FALSE)
     
-    img_dt = unique(mdt[, .(bx, by, plot_id)])
-    img_dt[, png_file := file.path(odir, paste0(plot_id, ".png"))]
-    
-    
-    # xrng = range(res_tsne$Y[,1])
-    # yrng = range(res_tsne$Y[,2])
+    if(is.null(facet_by)){
+        img_dt = unique(mdt[, .(bx, by, plot_id)])
+        img_dt[, png_file := file.path(odir, paste0(plot_id, ".png"))]
+    }else{
+        img_dt = unique(mdt[, .(bx, by, plot_id, get(facet_by))])
+        colnames(img_dt)[4] = facet_by
+        img_dt[, png_file := file.path(odir, paste0(get(facet_by), "_", plot_id, ".png"))]
+    }
     
     xs = mybin_centers(tsne_res$tx, n_points, xrng = xrng)
     ys = mybin_centers(tsne_res$ty, n_points, xrng = yrng)
@@ -168,14 +224,26 @@ make_tsne_img = function(bw_dt, tdt, n_points,
         file.remove(img_dt$png_file[file.exists(img_dt$png_file)])
     }
     
-    img_dt = merge(img_dt, tdt[, .N, .(bx, by)])
+    if(is.null(facet_by)){
+        img_dt = merge(img_dt, position_dt[, .N, .(bx, by)])
+    }else{
+        tmp_dt = position_dt[, .N, .(bx, by, get(facet_by))]
+        colnames(tmp_dt)[colnames(tmp_dt) == "get"] = facet_by
+        img_dt = merge(img_dt, tmp_dt)
+    }
+    
     if(any(!file.exists(img_dt$png_file))){
         plot_info = lapply(which(!file.exists(img_dt$png_file)), function(i){
             # figure out how not to copy global env
             # hidden = parallel::mclapply(which(!file.exists(img_dt$png_file)), function(i){}, mc.cores = n_cores)
             fpath = img_dt$png_file[i]
             p_id = img_dt$plot_id[i]
-            pdt = mdt[plot_id == p_id]
+            if(is.null(facet_by)){
+                pdt = mdt[plot_id == p_id]    
+            }else{
+                pdt = mdt[plot_id == p_id & get(facet_by) == img_dt[[facet_by]][i]]
+            }
+            
             # pdt[, ysm := seqsetvis:::movingAverage(y, n = 8), by = .(mark)]
             pdt[, ysm := seqsetvis:::movingAverage(ynorm, n = ma_size), by = .(mark)]
             pdt = applySpline(pdt, n = 10, by_ = "mark", y_ = "ysm")
@@ -201,11 +269,23 @@ make_tsne_img = function(bw_dt, tdt, n_points,
             # })
         }, mc.cores = n_cores)
     }
-    return(list(images_dt = img_dt, summary_profiles_dt = mdt, tsne_dt = tdt))
+    
+    if(is.factor(position_dt$cell)){
+        if(!is.null(img_dt$cell)){
+            img_dt$cell = factor(img_dt$cell, levels = levels(position_dt$cell))
+        }
+        if(!is.null(mdt$cell)){
+            mdt$cell = factor(mdt$cell, levels = levels(position_dt$cell))
+        }
+    }
+    
+    return(list(images_dt = img_dt, summary_profiles_dt = mdt, tsne_dt = position_dt, n_points = n_points, xrng = xrng, yrng = yrng))
 }
 
 prep_tsne_img = function(simg_dt, 
                          n_points,
+                         xrng,
+                         yrng,
                          N_floor = 0,
                          N_ceiling = NULL,
                          min_size = .3
@@ -222,8 +302,6 @@ prep_tsne_img = function(simg_dt,
     simg_dt[, img_size := img_size]
     simg_dt = simg_dt[img_size >= min_size]
     
-    xrng = range(tsne_res$tx)
-    yrng = range(tsne_res$ty)
     xspc = diff(xrng)/n_points/2
     yspc = diff(yrng)/n_points/2
     
@@ -236,6 +314,8 @@ prep_tsne_img = function(simg_dt,
 
 plot_tsne_img = function(images_dt,
                          n_points,
+                         xrng = c(-.5, .5),
+                         yrng = c(-.5, .5),
                          N_floor = 0,
                          N_ceiling = NULL,
                          min_size = .3, 
@@ -244,16 +324,22 @@ plot_tsne_img = function(images_dt,
     simg_dt = copy(images_dt) 
     simg_dt = prep_tsne_img(simg_dt, 
                             n_points = n_points,
+                            xrng = xrng,
+                            yrng = yrng,
                             N_floor = N_floor,
                             N_ceiling = N_ceiling,
                             min_size = min_size
     )
     
-    p = ggplot(simg_dt, aes(xmin = xmin, xmax = xmax, 
+    p = ggplot() + 
+        geom_image.rect(data = simg_dt, 
+                        aes(xmin = xmin, xmax = xmax, 
                             ymin = ymin, ymax = ymax, 
-                            image = png_file)) + 
-        geom_image.rect() +#, color = rgb(0,0,1,.2)) + 
-        geom_rect(fill = NA, color = "black")
+                            image = png_file)) +#, color = rgb(0,0,1,.2)) + 
+        geom_rect(data = simg_dt, 
+                  aes(xmin = xmin, xmax = xmax, 
+                      ymin = ymin, ymax = ymax),
+                  fill = NA, color = "black")
     if(show_plot) print(p)
     invisible(list(plot = p, plot_data = simg_dt))
 }
@@ -261,14 +347,19 @@ plot_tsne_img = function(images_dt,
 plot_tsne_img_byCell = function(images_dt,
                                 tsne_dt,
                                 n_points,
+                                xrng = c(-.5, .5),
+                                yrng = c(-.5, .5),
                                 N_floor = 0,
                                 N_ceiling = NULL,
                                 min_size = .3, 
                                 show_plot = TRUE
 ){
-    simg_dt = merge(images_dt[, .(bx, by, plot_id, png_file, tx, ty)], tsne_dt[, .(N = .N), .(cell, bx, by)])
+    simg_dt = merge(images_dt[, .(bx, by, plot_id, png_file, tx, ty)], 
+                    tsne_dt[, .(N = .N), .(cell, bx, by)])
     simg_dt = prep_tsne_img(simg_dt, 
                             n_points = n_points,
+                            xrng = xrng,
+                            yrng = yrng,
                             N_floor = N_floor,
                             N_ceiling = N_ceiling,
                             min_size = min_size
@@ -278,7 +369,7 @@ plot_tsne_img_byCell = function(images_dt,
                             image = png_file)) + 
         geom_image.rect() +#, color = rgb(0,0,1,.2)) + 
         geom_rect(fill = NA, color = "black") +
-        facet_wrap("cell")
+        facet_wrap("cell", drop = FALSE)
     if(show_plot) print(p)
     invisible(list(plot = p, plot_data = simg_dt))
 }
@@ -323,32 +414,161 @@ bfcif = function(bfc, rname, FUN, force_overwrite = FALSE){
     res
 }
 
-make_tss_plot = function(qcell){
+make_tss_plot = function(qcell, as_facet = TRUE){
     xrng = range(tsne_res$tx)
     yrng = range(tsne_res$ty)
     
     pr_img_res = make_tsne_img(
         bw_dt = pr_dt, apply_norm = FALSE, 
-        tdt = tsne_res[cell == qcell], #force_rewrite = TRUE, 
+        tdt = tsne_res[cell %in% qcell], #force_rewrite = TRUE, 
         xrng = xrng,
         yrng = yrng,
         n_points = n_points, line_colors = c("signal" = "black")
     )
-    p_pr_density = plot_tsne_img_byCell(pr_img_res$images_dt, 
-                                        pr_img_res$tsne_dt[cell == qcell],
-                                        n_points = n_points, N_ceiling = NULL)$plot +
-        coord_cartesian(xlim = xrng, ylim = yrng)
-    p_h7_density = plot_tsne_img_byCell(img_res$images_dt, 
-                                        img_res$tsne_dt[cell == qcell], 
-                                        n_points = n_points, N_ceiling = NULL)$plot +
-        coord_cartesian(xlim = xrng, ylim = yrng)
+    if(as_facet){
+        p_pr_density = plot_tsne_img_byCell(pr_img_res$images_dt, 
+                                            pr_img_res$tsne_dt[cell %in% qcell],
+                                            n_points = n_points, N_ceiling = NULL)$plot +
+            coord_cartesian(xlim = xrng, ylim = yrng)
+        p_h7_density = plot_tsne_img_byCell(img_res$images_dt, 
+                                            img_res$tsne_dt[cell %in% qcell], 
+                                            n_points = n_points, N_ceiling = NULL)$plot +
+            coord_cartesian(xlim = xrng, ylim = yrng)
+    }else{
+        p_pr_density = plot_tsne_img(pr_img_res$images_dt, 
+                                     # pr_img_res$tsne_dt[cell %in% qcell],
+                                     n_points = n_points, N_ceiling = NULL)$plot +
+            coord_cartesian(xlim = xrng, ylim = yrng)
+        p_h7_density = plot_tsne_img(img_res$images_dt, 
+                                     # img_res$tsne_dt[cell %in% qcell], 
+                                     n_points = n_points, N_ceiling = NULL)$plot +
+            coord_cartesian(xlim = xrng, ylim = yrng)
+    }
     
-    pg = cowplot::plot_grid(p_h7_density + labs(title = paste(qcell, "k4me3+k27me3")), 
-                            p_pr_density + labs(title = paste(qcell, "tss frequency")))
-    ggsave(paste0("tmp_", qcell, "_tss.pdf"), plot = pg, width = 8, height = 4)
     
+    pg = cowplot::plot_grid(p_h7_density + labs(title = paste(paste(qcell, collapse = ", "), ": k4me3+k27me3")), 
+                            p_pr_density + labs(title = paste(paste(qcell, collapse = ", "), ": tss frequency")))
+    # ggsave(paste0("tmp_", qcell, "_tss.pdf"), plot = pg, width = 8, height = 4)
+    pg
     # head(pr_img_res$tsne_dt[cell == cell, .N, by = .(bx, by)][order(N, decreasing = TRUE)])
     # head(img_res$tsne_dt[cell == cell, .N, by = .(bx, by)][order(N, decreasing = TRUE)])
+}
+
+make_img_plots_facet = function(img_results, qcell = NULL, 
+                                xrng = c(-.5, .5), 
+                                yrng = c(-.5, .5), 
+                                N_floor = 0,
+                                N_ceiling = NULL,
+                                min_size = .3,
+                                facet_by = "cell"){
+    return_list = TRUE
+    if(all(c("images_dt", "summary_profiles_dt", "tsne_dt") %in% names(img_results))){
+        img_results = list(img_results)
+        return_list = FALSE
+    }
+    stopifnot(is.list(img_results))
+    # stopifnot(is.list(img_results$img_res))
+    
+    if(is.null(qcell)) 
+        qcell = 
+        as.character(unique(
+            img_results[[1]]$tsne_dt$cell
+        ))
+    
+    plots = lapply(img_results, function(x){
+        img_dt = copy(x$images_dt)
+        # img_dt$N = NULL
+        # tdt = x$tsne_dt[cell %in% qcell, .(.N), .(bx, by)]
+        # img_dt = merge(img_dt, tdt, by = c("bx", "by"))
+        plot_tsne_img(img_dt, 
+                      n_points = x$n_points, 
+                      N_floor = N_floor,
+                      N_ceiling = N_ceiling, 
+                      min_size = min_size,
+                      show_plot = FALSE, 
+                      xrng = xrng, 
+                      yrng = yrng)$plot +
+            coord_cartesian(xlim = xrng, ylim = yrng) +
+            facet_wrap(facet_by, drop = FALSE)
+    })
+    
+    
+    # pg = cowplot::plot_grid(plotlist = plots, nrow = length(plots))
+    # pg
+    if(return_list){
+        plots    
+    }else{
+        plots[[1]]
+    }
+    
+}
+
+make_img_plots = function(img_results, qcell = NULL, 
+                          xrng = c(-.5, .5), 
+                          yrng = c(-.5, .5), 
+                          N_floor = 0,
+                          N_ceiling = NULL,
+                          min_size = .3,
+                          as_facet = TRUE){
+    return_list = TRUE
+    if(all(c("images_dt", "summary_profiles_dt", "tsne_dt") %in% names(img_results))){
+        img_results = list(img_results)
+        return_list = FALSE
+    }
+    stopifnot(is.list(img_results))
+    
+    # img_results = lapply(img_results, function(x){
+    #     if(is.null(x$cell)){
+    #         x$cell = factor("cell")
+    #     }
+    #     x
+    # })
+    if(is.null(qcell)) 
+        qcell = 
+            levels(img_results[[1]]$tsne_dt$cell)
+        
+    
+    if(as_facet){
+        plots = lapply(img_results, function(x){
+            pdt = x$tsne_dt[cell %in% qcell]
+            pdt$cell = factor(pdt$cell, levels = qcell)
+            plot_tsne_img_byCell(x$images_dt, 
+                                 pdt,
+                                 n_points = x$n_points, 
+                                 N_floor = N_floor,
+                                 N_ceiling = N_ceiling, 
+                                 min_size = min_size,
+                                 show_plot = FALSE, 
+                                 xrng = xrng, yrng = 
+                                     yrng)$plot +
+                coord_cartesian(xlim = xrng, ylim = yrng)
+        })
+    }else{
+        plots = lapply(img_results, function(x){
+            img_dt = copy(x$images_dt)
+            img_dt$N = NULL
+            tdt = x$tsne_dt[cell %in% qcell, .(.N), .(bx, by)]
+            img_dt = merge(img_dt, tdt)
+            plot_tsne_img(img_dt, 
+                          n_points = x$n_points, 
+                          N_floor = N_floor,
+                          N_ceiling = N_ceiling, 
+                          min_size = min_size,
+                          show_plot = FALSE, 
+                          xrng = xrng, 
+                          yrng = yrng)$plot +
+                coord_cartesian(xlim = xrng, ylim = yrng)
+        })
+    }
+    
+    
+    # pg = cowplot::plot_grid(plotlist = plots, nrow = length(plots))
+    # pg
+    if(return_list){
+        plots    
+    }else{
+        plots[[1]]
+    }
 }
 
 ang_cap = function(angle){
@@ -413,7 +633,8 @@ plot_velocity_arrows = function(tsne_res, cell_a, cell_b,
                                 max_plotted = 500,
                                 delta.min = 0,
                                 delta.max = Inf,
-                                angle.min = 0, angle.max = 360){
+                                angle.min = 0, 
+                                angle.max = 360){
     v_dt = calc_delta(tsne_res, cell_a, cell_b, n_points)$velocity_dt
     v_dt[, distance := xy2dist(x1 = tx_cell_a, x2 = tx_cell_b, y1 = ty_cell_a, y2 = ty_cell_b)]
     v_dt = v_dt[distance >= delta.min & distance <= delta.max]
@@ -457,6 +678,181 @@ plot_velocity_arrows = function(tsne_res, cell_a, cell_b,
         scale_color_gradientn(colours = c("orange", "red", "purple", "blue", 
                                           "green", "orange"), limits = c(0, 360), breaks = 0:4*90) 
     list(p_arrows, p_key)
+}
+
+plot_velocity_arrows_selected = function(tsne_res, qgr, qcells, tss_ids,
+                                         grp_var = c("id", "grp")[1],
+                                         line_type = c("curve", "spline", "straight")[2],
+                                         label_type = c("text", "label", "none")[2]){
+    # qcells = c("H7", "CD34", "Kasumi1", "mm1s", "Nalm6")
+    # tss_ids = subset(qgr, gene_name == "RUNX1")$id[1]
+    stopifnot(qcells %in% unique(tsne_res$cell))
+    if(!tss_ids %in% tsne_res$id){
+        tmp = unlist(strsplit(tss_ids, " "))
+        if(length(tmp) > 1){
+            tss_ids = tmp[1]
+            tmp = as.numeric(tmp[-1])
+            tss_ids = subset(qgr, gene_name == tss_ids)$id[tmp]
+        }else{
+            tss_ids = subset(qgr, gene_name == tss_ids)$id
+        }
+        
+    }
+    names(qgr) = qgr$id
+    message(paste(as.character(qgr[tss_ids]), collapse = "\n"))
+    stopifnot(tss_ids %in% tsne_res$id)
+    
+    lines_dt = tsne_res[cell %in% qcells & id %in% tss_ids]
+    
+    lines_dt$cell = factor(lines_dt$cell, levels = qcells)
+    lines_dt = lines_dt[order(cell)][order(id)][]
+    lines_dt[, cell_o := seq(.N), by = .(id)]
+    # lines_dt
+    lines_dt$id = as.character(qgr[lines_dt$id])
+    
+    
+    # lines_dt$tx = scales::rescale(c(1,1, 2,2,1,1:5), to = c(-.5,.5))
+    # lines_dt$ty = scales::rescale(c(0,1, 1.5,2.5,3,1:5), to = c(-.5,.5))
+    # 
+    # 
+    
+    # lines_dt[, .(tx = spline(x = pid, y = tx, n = n*(length(qcells)-1)), 
+    # ty = spline(x = pid, y = ty, n = n*(length(qcells)-1))), by = id]
+    p =     ggplot() + 
+        geom_point(data = tsne_res[sample(seq(nrow(tsne_res)), 5000),],
+                   aes(x = tx, y = ty), color = "gray") + 
+        labs(title = paste(qcells, collapse = ", ")) +
+        theme_classic() +
+        scale_color_brewer(palette = "Dark2")
+    switch(line_type, 
+           curve = {
+               plot_dt = merge(lines_dt[seq_along(qcells)[-length(qcells)],.(tx, ty, id, cell_o)],
+                               lines_dt[seq_along(qcells)[-1], .(tx_end = tx, ty_end = ty, id, cell_o = cell_o -1)])
+               switch(grp_var, 
+                      grp = {
+                          p = p +
+                              geom_curve(data = plot_dt,
+                                         aes(x = tx, y = ty, xend = tx_end, yend = ty_end, color = id),
+                                         size = 1, arrow = arrow())
+                      },
+                      id = {
+                          p = p +
+                              geom_curve(data = plot_dt[cell_o < max(cell_o)],
+                                         aes(x = tx, y = ty, xend = tx_end, yend = ty_end, color = id),
+                                         size = 1) +
+                              geom_curve(data = plot_dt[cell_o == max(cell_o)],
+                                         aes(x = tx, y = ty, xend = tx_end, yend = ty_end, color = id),
+                                         size = 1, arrow = arrow())
+                      })
+           },
+           spline = {
+               n = 20
+               sp_y = lines_dt[, spline(x = cell_o, y = ty, 
+                                        n = n*(length(qcells)-1)), by = id][
+                                            , .(pid = seq(.N), ty = y), by = .(id)]
+               sp_x = lines_dt[, spline(x = cell_o, y = tx, 
+                                        n = n*(length(qcells)-1)), by = id][
+                                            , .(pid = seq(.N), tx = y), by = .(id)]
+               sp_dt = merge(sp_x, sp_y, by = c("id", "pid"))
+               ceiling(sp_dt$pid/n)
+               
+               sp_dt[, grp := ceiling(pid / n)]
+               sp_dt[, grp_o := seq(.N), by = .(grp, id)]
+               start_dt = merge(lines_dt[cell_o < length(qcells), .(tx, ty, grp = cell_o, id)], 
+                                unique(sp_dt[, .(id, grp)]))[, grp_o := 0]
+               end_dt = merge(lines_dt[cell_o > 1 & cell_o < length(qcells), .(tx, ty, grp = cell_o-1, id)], 
+                              unique(sp_dt[, .(id, grp = grp)]))[, grp_o := n+1]
+               plot_dt = rbind(
+                   sp_dt[, .(grp, id, tx, ty, grp_o)],
+                   start_dt, 
+                   end_dt)[order(grp_o)][order(id)][order(grp)]
+               switch(grp_var, 
+                      grp = {
+                          p = p +
+                              geom_path(data = plot_dt,
+                                        aes(x = tx, y = ty, color = id, group = paste(grp,id)),
+                                        arrow = arrow(),
+                                        size = 1.2, alpha = 1,
+                                        show.legend = FALSE)
+                      },
+                      id = {
+                          p = p +
+                              geom_path(data = plot_dt,
+                                        aes(x = tx, y = ty, color = id, group = id),
+                                        arrow = arrow(),
+                                        size = 1.2, alpha = 1,
+                                        show.legend = FALSE)
+                      })
+               
+           }, 
+           straight = {
+               switch(grp_var, 
+                      grp = {
+                          plot_dt = merge(lines_dt[seq_along(qcells)[-length(qcells)],.(tx, ty, id, cell_o)],
+                                          lines_dt[seq_along(qcells)[-1], .(tx_end = tx, ty_end = ty, id, cell_o = cell_o -1)])
+                          p = p +
+                              geom_segment(data = plot_dt,
+                                           aes(x = tx, y = ty, xend = tx_end, yend = ty_end, color = id),
+                                           size = 1, arrow = arrow())
+                      },
+                      id = {
+                          plot_dt = lines_dt
+                          p = p + geom_path(data = plot_dt, aes(x = tx, y = ty), arrow = arrow())
+                      })
+               
+           })
+    p = p + geom_point(data = lines_dt, 
+                       aes(x = tx, y = ty, color = id),
+                       size = 3, shape = 21, fill = "white")
+    switch(label_type,
+           text = {
+               p = p + ggrepel::geom_text_repel(data = lines_dt,
+                                                aes(x = tx, y = ty, color = id, label = cell),
+                                                show.legend = FALSE)
+           },
+           label = {
+               p = p + ggrepel::geom_label_repel(data = lines_dt,
+                                                 aes(x = tx, y = ty, color = id, label = cell),
+                                                 fill = "white", show.legend = FALSE)
+           }, 
+           none = {
+               p = p
+           })
+    p
+}
+
+plot_profiles_selected = function(data_dt, qgr, qcells, tss_ids){
+    # qcells = c("H7", "CD34", "Kasumi1", "mm1s", "Nalm6")
+    # tss_ids = subset(qgr, gene_name == "RUNX1")$id[1]
+    stopifnot(qcells %in% unique(data_dt$cell))
+    if(!tss_ids %in% data_dt$id){
+        tmp = unlist(strsplit(tss_ids, " "))
+        if(length(tmp) > 1){
+            tss_ids = tmp[1]
+            tmp = as.numeric(tmp[-1])
+            tss_ids = subset(qgr, gene_name == tss_ids)$id[tmp]
+        }else{
+            tss_ids = subset(qgr, gene_name == tss_ids)$id
+        }
+        
+    }
+    names(qgr) = qgr$id
+    message(paste(as.character(qgr[tss_ids]), collapse = "\n"))
+    plot_dt = data_dt[id %in% tss_ids & cell %in% qcells]
+    plot_dt$cell = factor(plot_dt$cell, levels = qcells)
+    plot_dt$id = factor(plot_dt$id, levels = tss_ids)
+    
+    p = ggplot(plot_dt, aes(x = x, ymin = 0, ymax = y, y = y, color = mark, fill = mark)) + 
+        facet_grid("cell~id", switch = "y") + 
+        geom_ribbon(alpha = .5) +
+        geom_path(show.legend = FALSE) + 
+        theme_classic() + 
+        theme(strip.background = element_blank(), strip.placement = "outside",
+              strip.text.y = element_text(angle = 180)) +
+        labs(x = "", y = "") +
+        scale_color_manual(values = c("H3K27me3" = "firebrick", "H3K4me3" = "forestgreen")) +
+        scale_fill_manual(values = c("H3K27me3" = "firebrick", "H3K4me3" = "forestgreen"))
+    p
 }
 
 library(magick)
@@ -690,3 +1086,5 @@ getAR2 <- function(magick_image) {
 
 
 compute_just <- getFromNamespace("compute_just", "ggplot2")
+
+
